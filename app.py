@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import secrets
 import sqlite3
 import uuid
 from datetime import date, datetime, timezone
@@ -18,7 +19,7 @@ from urllib.parse import urlsplit
 import pdfplumber
 import pypdfium2 as pdfium
 import requests
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 ROOT = Path(__file__).resolve().parent
@@ -55,6 +56,8 @@ DATA = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
 FILES = DATA / "receipts"
 DB = DATA / "passthrough.sqlite3"
 MAX_BYTES = 12 * 1024 * 1024
+WORKSPACE_COOKIE = "passthrough_workspace"
+LEGACY_WORKSPACE = "__legacy_unassigned__"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 AI_PROVIDER = os.getenv("AI_PROVIDER", "backboard").strip().lower()
@@ -65,6 +68,31 @@ BACKBOARD_MODEL = os.getenv("BACKBOARD_MODEL", "qwen/qwen3.5-9b").strip()
 OCR_ENGINE = None
 PORT = int(os.getenv("PORT", "8000"))
 app = FastAPI(title="PassThrough", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def assign_private_workspace(request: Request, call_next):
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    workspace_id = request.cookies.get(WORKSPACE_COOKIE, "")
+    new_workspace = not re.fullmatch(r"[A-Za-z0-9_-]{32,64}", workspace_id)
+    if new_workspace:
+        workspace_id = secrets.token_urlsafe(32)
+    request.state.workspace_id = workspace_id
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "private, no-store"
+    if new_workspace:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+        response.set_cookie(
+            WORKSPACE_COOKIE,
+            workspace_id,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            secure=request.url.scheme == "https" or forwarded_proto == "https",
+            samesite="strict",
+            path="/",
+        )
+    return response
 
 
 @app.get("/healthz")
@@ -92,13 +120,26 @@ def connect():
     db = sqlite3.connect(DB)
     db.row_factory = sqlite3.Row
     try:
-        db.execute("""CREATE TABLE IF NOT EXISTS expenses (
-            id TEXT PRIMARY KEY, digest TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+        columns = {row[1] for row in db.execute("PRAGMA table_info(expenses)")}
+        if columns and "workspace_id" not in columns:
+            db.execute("ALTER TABLE expenses RENAME TO expenses_legacy")
+            columns = set()
+        if not columns:
+            db.execute("""CREATE TABLE IF NOT EXISTS expenses (
+            id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, digest TEXT NOT NULL, filename TEXT NOT NULL,
             stored_file TEXT NOT NULL, merchant TEXT, purchased_on TEXT, total TEXT,
             currency TEXT, expense TEXT, evidence TEXT, project TEXT NOT NULL,
             client TEXT NOT NULL, billable INTEGER NOT NULL DEFAULT 0,
             approved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
         )""")
+            legacy = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='expenses_legacy'").fetchone()
+            if legacy:
+                db.execute("""INSERT INTO expenses
+                    (id,workspace_id,digest,filename,stored_file,merchant,purchased_on,total,currency,expense,evidence,project,client,billable,approved,created_at)
+                    SELECT id,?,digest,filename,stored_file,merchant,purchased_on,total,currency,expense,evidence,project,client,billable,approved,created_at
+                    FROM expenses_legacy""", (LEGACY_WORKSPACE,))
+                db.execute("DROP TABLE expenses_legacy")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS expenses_workspace_digest ON expenses(workspace_id,digest)")
         yield db
         db.commit()
     except Exception:
@@ -319,6 +360,7 @@ def _short(value, limit):
 
 @app.post("/api/expenses")
 async def add_expense(
+    request: Request,
     file: UploadFile = File(...),
     project: str = Form(...),
     client: str = Form("")
@@ -342,7 +384,7 @@ async def add_expense(
         raise HTTPException(415, "The file contents do not match its extension.")
     digest = hashlib.sha256(content).hexdigest()
     with connect() as db:
-        if db.execute("SELECT 1 FROM expenses WHERE digest=?", (digest,)).fetchone():
+        if db.execute("SELECT 1 FROM expenses WHERE workspace_id=? AND digest=?", (request.state.workspace_id, digest)).fetchone():
             raise HTTPException(409, "This exact receipt is already in your expense list.")
     text, images = prepare_document(content, suffix)
     fields = extract_fields(text, images)
@@ -351,9 +393,9 @@ async def add_expense(
     stored_name = item_id + suffix
     (FILES / stored_name).write_bytes(content)
     with connect() as db:
-        db.execute("""INSERT INTO expenses (id,digest,filename,stored_file,merchant,purchased_on,total,currency,expense,evidence,project,client,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (item_id, digest, filename, stored_name, fields["merchant"], fields["purchased_on"], fields["total"],
+        db.execute("""INSERT INTO expenses (id,workspace_id,digest,filename,stored_file,merchant,purchased_on,total,currency,expense,evidence,project,client,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (item_id, request.state.workspace_id, digest, filename, stored_name, fields["merchant"], fields["purchased_on"], fields["total"],
              fields["currency"], fields["expense"], fields["evidence"], project, client,
              datetime.now(timezone.utc).isoformat()))
     return {"id": item_id, **fields, "filename": filename, "project": project, "client": client,
@@ -371,16 +413,16 @@ def serialize(row):
 
 
 @app.get("/api/expenses")
-def list_expenses():
+def list_expenses(request: Request):
     with connect() as db:
-        rows = db.execute("SELECT * FROM expenses ORDER BY created_at DESC").fetchall()
+        rows = db.execute("SELECT * FROM expenses WHERE workspace_id=? ORDER BY created_at DESC", (request.state.workspace_id,)).fetchall()
     return {"expenses": [serialize(row) for row in rows]}
 
 
 @app.get("/api/expenses/{item_id}/file")
-def receipt_file(item_id: str):
+def receipt_file(item_id: str, request: Request):
     with connect() as db:
-        row = db.execute("SELECT filename,stored_file FROM expenses WHERE id=?", (item_id,)).fetchone()
+        row = db.execute("SELECT filename,stored_file FROM expenses WHERE id=? AND workspace_id=?", (item_id, request.state.workspace_id)).fetchone()
     if not row:
         raise HTTPException(404, "Receipt not found.")
     path = FILES / row["stored_file"]
@@ -390,7 +432,7 @@ def receipt_file(item_id: str):
 
 
 @app.post("/api/expenses/{item_id}/approve")
-async def approve_expense(item_id: str, payload: dict):
+async def approve_expense(item_id: str, payload: dict, request: Request):
     merchant = _short(payload.get("merchant"), 160)
     expense = _short(payload.get("expense"), 240)
     project = _short(payload.get("project"), 120)
@@ -409,30 +451,30 @@ async def approve_expense(item_id: str, payload: dict):
     if not merchant or not expense or not project or not re.fullmatch(r"[A-Z]{3}", currency):
         raise HTTPException(422, "Merchant, invoice line, project, date, amount, and a three-letter currency are required.")
     with connect() as db:
-        result = db.execute("""UPDATE expenses SET merchant=?,purchased_on=?,total=?,currency=?,expense=?,project=?,client=?,billable=?,approved=1 WHERE id=?""",
+        result = db.execute("""UPDATE expenses SET merchant=?,purchased_on=?,total=?,currency=?,expense=?,project=?,client=?,billable=?,approved=1 WHERE id=? AND workspace_id=?""",
             (merchant, purchased_on, format(amount, "f"), currency, expense, project, client,
-             int(bool(payload.get("billable"))), item_id))
+             int(bool(payload.get("billable"))), item_id, request.state.workspace_id))
         if not result.rowcount:
             raise HTTPException(404, "Expense not found.")
-        row = db.execute("SELECT * FROM expenses WHERE id=?", (item_id,)).fetchone()
+        row = db.execute("SELECT * FROM expenses WHERE id=? AND workspace_id=?", (item_id, request.state.workspace_id)).fetchone()
     return serialize(row)
 
 
 @app.delete("/api/expenses/{item_id}")
-def delete_expense(item_id: str):
+def delete_expense(item_id: str, request: Request):
     with connect() as db:
-        row = db.execute("SELECT stored_file FROM expenses WHERE id=?", (item_id,)).fetchone()
+        row = db.execute("SELECT stored_file FROM expenses WHERE id=? AND workspace_id=?", (item_id, request.state.workspace_id)).fetchone()
         if not row:
             raise HTTPException(404, "Expense not found.")
         (FILES / row["stored_file"]).unlink(missing_ok=True)
-        db.execute("DELETE FROM expenses WHERE id=?", (item_id,))
+        db.execute("DELETE FROM expenses WHERE id=? AND workspace_id=?", (item_id, request.state.workspace_id))
     return {"deleted": True}
 
 
 @app.get("/api/export.csv")
-def export_csv():
+def export_csv(request: Request):
     with connect() as db:
-        rows = db.execute("SELECT * FROM expenses WHERE approved=1 AND billable=1 ORDER BY project, purchased_on").fetchall()
+        rows = db.execute("SELECT * FROM expenses WHERE workspace_id=? AND approved=1 AND billable=1 ORDER BY project, purchased_on", (request.state.workspace_id,)).fetchall()
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["Project", "Client", "Date", "Expense", "Merchant", "Amount", "Currency", "Receipt"])

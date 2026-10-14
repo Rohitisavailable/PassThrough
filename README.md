@@ -4,7 +4,7 @@
 
 ## Backboard and open-weight model
 
-PassThrough uses Backboard with the configured open-weight vision model (Qwen3.5 9B through OpenRouter by default) to extract receipt fields. It does not use a local AI model in Backboard mode: receipt images and scanned PDF pages go to Backboard directly, while searchable PDF text is extracted locally and sent. Client/project labels and a saved receipt copy stay on this computer. Backboard model usage may incur charges.
+PassThrough uses Backboard with the configured open-weight vision model (Qwen3.5 9B through OpenRouter by default) to extract receipt fields. It does not use a local AI model in Backboard mode: receipt images and scanned PDF pages go to Backboard directly, while searchable PDF text is extracted locally and sent. Backboard model usage may incur charges.
 
 ## Run locally on Windows
 
@@ -27,7 +27,7 @@ Add your key to `.env` as `BACKBOARD_API_KEY=...`. Set `AI_PROVIDER=backboard`, 
 
 This app needs a **Web Service**, not a Static Site. The included `render.yaml` configures a free FastAPI demo with Backboard. Connect this GitHub repository in Render and create a Blueprint from `render.yaml`. Add `BACKBOARD_API_KEY` in Render's environment settings; never commit it.
 
-The app has no login. Anyone who visits the public URL can view, edit, export, or delete uploaded receipts and expense records. The Free plan also has ephemeral storage, so data can disappear after a restart or deploy. Use sample data only; do not upload real or sensitive client documents. The public `/healthz` endpoint only reports service health.
+Each browser profile gets its own workspace via a random, HttpOnly cookie; API queries and receipt-file access are scoped to that workspace. There is no account recovery or cross-device sync: clearing site cookies creates a new workspace, and people sharing a browser profile share its workspace. The Free plan has ephemeral storage, so data can disappear after a restart or deploy. Use sample data only; do not upload real or sensitive client documents. The public `/healthz` endpoint only reports service health.
 
 
 ## Workflow
@@ -40,7 +40,7 @@ The app has no login. Anyone who visits the public URL can view, edit, export, o
 
 ## Trust and data handling
 
-Every model extraction starts in review; nothing is automatically approved or invoiced. The server validates dates, currency codes, and positive decimal amounts in code. Amounts in different currencies stay separate. Exact duplicate files are rejected. Receipt images, extracted fields, and approval state are saved in `data/` on this computer; deleting an expense also deletes its saved receipt. Do not expose this local app to an untrusted network. Review the source image before billing a client.
+Every model extraction starts in review; nothing is automatically approved or invoiced. The server validates dates, currency codes, and positive decimal amounts in code. Amounts in different currencies stay separate. Exact duplicate files are rejected per workspace. Receipt images and expense records are stored in `data/` for local runs; Render runs use its configured data directory. Deleting an expense also deletes its saved receipt. Review the source image before billing a client.
 
 Scanned receipts can be hard to read, the model may miss or misread a field, and this first version does not connect to accounting software or calculate tax treatment. It creates a reviewable invoice-line CSV; it does not send invoices or payments.
 
