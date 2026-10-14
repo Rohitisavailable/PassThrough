@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: passthrough
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: AI_PROVIDER
+        value: backboard
+      - key: BACKBOARD_PROVIDER
+        value: openrouter
+      - key: BACKBOARD_MODEL
+        value: qwen/qwen3.5-9b
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+      - key: APP_USERNAME
+        value: owner
+      - key: APP_PASSWORD
+        sync: false
+      - key: BACKBOARD_API_KEY
+        sync: false

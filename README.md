@@ -23,6 +23,12 @@ Open <http://127.0.0.1:8001/>. The server binds to loopback. RapidOCR downloads 
 
 Add your key to `.env` as `BACKBOARD_API_KEY=...`. Set `AI_PROVIDER=backboard`, `BACKBOARD_PROVIDER=openrouter`, `BACKBOARD_MODEL=qwen/qwen3.5-9b`, and `PORT=8001` there too. The app reads `.env` on startup; non-empty process environment variables take precedence. `.env` is excluded from Git. Receipt image/text content leaves this computer for Backboard; review Backboard and upstream model billing/privacy terms before using real client receipts.
 
+## Deploy to Render
+
+This app needs a **Web Service**, not a Static Site. The included `render.yaml` configures a free, single-user FastAPI demo with HTTPS Basic Auth and Backboard. Connect this GitHub repository in Render and create a Blueprint from `render.yaml`. In the prompted secret fields, enter `BACKBOARD_API_KEY` and a unique `APP_PASSWORD` of at least 16 characters. Keep both in Render's environment settings; never commit them. The username is `owner`.
+
+The Free plan has ephemeral storage. Receipts and expense records can disappear after a restart or deploy, so use this for a demo with sample data only, not real client documents. The service is protected by browser Basic Auth; use a strong unique password and only access it over the Render HTTPS URL. The public `/healthz` endpoint reveals no receipt data.
+
 
 ## Workflow
 

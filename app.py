@@ -4,6 +4,7 @@ import base64
 import csv
 from contextlib import contextmanager
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -19,7 +20,7 @@ import pdfplumber
 import pypdfium2 as pdfium
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 ROOT = Path(__file__).resolve().parent
 
@@ -51,7 +52,7 @@ def load_local_env():
 
 
 load_local_env()
-DATA = ROOT / "data"
+DATA = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
 FILES = DATA / "receipts"
 DB = DATA / "passthrough.sqlite3"
 MAX_BYTES = 12 * 1024 * 1024
@@ -62,9 +63,36 @@ BACKBOARD_API_KEY = os.getenv("BACKBOARD_API_KEY", "").strip()
 BACKBOARD_URL = os.getenv("BACKBOARD_URL", "https://app.backboard.io/api/threads/messages")
 BACKBOARD_PROVIDER = os.getenv("BACKBOARD_PROVIDER", "openrouter").strip()
 BACKBOARD_MODEL = os.getenv("BACKBOARD_MODEL", "qwen/qwen3.5-9b").strip()
+APP_USERNAME = os.getenv("APP_USERNAME", "owner").strip()
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 OCR_ENGINE = None
 PORT = int(os.getenv("PORT", "8000"))
 app = FastAPI(title="PassThrough", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def protect_deployed_instance(request, call_next):
+    # A single-user install is protected with HTTPS Basic Auth on Render. Keep
+    # health checks public, and fail closed if Render starts without a password.
+    if request.url.path == "/healthz":
+        return JSONResponse({"ok": True})
+    if not APP_PASSWORD:
+        if os.getenv("RENDER"):
+            return JSONResponse({"detail": "Set APP_PASSWORD in the service environment."}, status_code=503)
+        return await call_next(request)
+    if len(APP_PASSWORD) < 16:
+        return JSONResponse({"detail": "APP_PASSWORD must be at least 16 characters."}, status_code=503)
+    authorization = request.headers.get("authorization", "")
+    try:
+        scheme, encoded = authorization.split(" ", 1)
+        credentials = base64.b64decode(encoded, validate=True).decode("utf-8")
+        username, password = credentials.split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        username, password, scheme = "", "", ""
+    if (scheme.lower() != "basic" or not hmac.compare_digest(username, APP_USERNAME)
+            or not hmac.compare_digest(password, APP_PASSWORD)):
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="PassThrough", charset="UTF-8"'})
+    return await call_next(request)
 
 SCHEMA = {
     "type": "object", "additionalProperties": False,
