@@ -129,6 +129,11 @@ def home():
     return FileResponse(ROOT / "dashboard.html")
 
 
+@app.get("/logo.svg")
+def logo():
+    return FileResponse(ROOT / "logo.svg", media_type="image/svg+xml")
+
+
 @app.get("/api/status")
 def status():
     result = model_state()
