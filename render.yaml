@@ -15,9 +15,5 @@ services:
         value: qwen/qwen3.5-9b
       - key: DATA_DIR
         value: /opt/render/project/src/data
-      - key: APP_USERNAME
-        value: owner
-      - key: APP_PASSWORD
-        sync: false
       - key: BACKBOARD_API_KEY
         sync: false

@@ -25,9 +25,9 @@ Add your key to `.env` as `BACKBOARD_API_KEY=...`. Set `AI_PROVIDER=backboard`, 
 
 ## Deploy to Render
 
-This app needs a **Web Service**, not a Static Site. The included `render.yaml` configures a free, single-user FastAPI demo with HTTPS Basic Auth and Backboard. Connect this GitHub repository in Render and create a Blueprint from `render.yaml`. In the prompted secret fields, enter `BACKBOARD_API_KEY` and a unique `APP_PASSWORD` of at least 16 characters. Keep both in Render's environment settings; never commit them. The username is `owner`.
+This app needs a **Web Service**, not a Static Site. The included `render.yaml` configures a free FastAPI demo with Backboard. Connect this GitHub repository in Render and create a Blueprint from `render.yaml`. Add `BACKBOARD_API_KEY` in Render's environment settings; never commit it.
 
-The Free plan has ephemeral storage. Receipts and expense records can disappear after a restart or deploy, so use this for a demo with sample data only, not real client documents. The service is protected by browser Basic Auth; use a strong unique password and only access it over the Render HTTPS URL. The public `/healthz` endpoint reveals no receipt data.
+The app has no login. Anyone who visits the public URL can view, edit, export, or delete uploaded receipts and expense records. The Free plan also has ephemeral storage, so data can disappear after a restart or deploy. Use sample data only; do not upload real or sensitive client documents. The public `/healthz` endpoint only reports service health.
 
 
 ## Workflow
