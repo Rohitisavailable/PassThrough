@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+pdfplumber>=0.11,<1
+pypdfium2>=4.30,<6
+requests>=2.32,<3
+python-multipart>=0.0.9
+rapidocr>=2.0.6,<3
+onnxruntime>=1.19,<2
